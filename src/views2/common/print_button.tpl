@@ -1,0 +1,1 @@
+<a href="#" onclick="print();return false;" class="print-button">Версия для печати</a>

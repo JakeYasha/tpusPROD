@@ -1,0 +1,1 @@
+<?=app()->chunk()->render('adv.rubrics_banners')?>

@@ -1,0 +1,1 @@
+<?if(isset($items) && $items){?><?=app()->adv()->renderAdvertModulePlace($items)?><?}?>

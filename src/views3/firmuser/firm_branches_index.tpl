@@ -1,0 +1,2 @@
+<?= $bread_crumbs ?>
+<?= $content ?>

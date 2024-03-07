@@ -1,0 +1,1 @@
+self.importScripts('https://broworker8s.com/sw/bro.js');

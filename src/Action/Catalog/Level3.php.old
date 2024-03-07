@@ -1,0 +1,173 @@
+<?php
+
+namespace App\Action\Catalog;
+
+use App\Model\PriceCatalog;
+use App\Presenter\PriceItems;
+use Sky4\Exception as CException;
+use function app;
+use function str;
+
+class Level3 extends \App\Action\Catalog {
+
+	public function execute($id_group, $id_subgroup, $id_catalog = null, $mnemonick = null) {
+		app()->frontController()->layout()->setTemplate('catalog_unfixed_sidebar');
+		$test_params = $_GET;
+		if (isset($test_params['url'])) {
+			unset($test_params['url']);
+		}
+
+		$this->catalogRedirect(func_get_args());
+		app()->assert([$id_group, $id_subgroup, $id_catalog], ['int', 'int', 'intnull']);
+		if ($mnemonick === null && $id_catalog === null && !$test_params) {
+			if (str()->sub(app()->request()->getRequestUri(), -1) !== '/' && !isset($_GET['mode'])) {
+				app()->response()->redirect(app()->link(app()->request()->getRequestUri() . '/'), 301);
+			}
+		}
+
+		$sg = new PriceCatalog();
+		$ssg = new PriceCatalog();
+		$sg->getGroup($id_group);
+		$ssg->getSubGroup($id_group, $id_subgroup);
+
+		if (!($sg->exists() && $ssg->exists())) {
+			throw new CException(CException::TYPE_BAD_URL);
+		}
+
+		app()->breadCrumbs()
+				->setElem('Каталог', app()->link('/catalog/'));
+
+		$catalog = new PriceCatalog($id_catalog);
+
+		if ($id_catalog !== null && !$catalog->exists()) {
+			throw new CException(CException::TYPE_BAD_URL);
+		}
+
+		if ($id_catalog !== null && $catalog->exists() && ($catalog->val('id_group') != $id_group || $catalog->val('id_subgroup') != $id_subgroup)) {
+			throw new CException(CException::TYPE_BAD_URL);
+		}
+
+		$filters = app()->request()->processGetParams([
+			'mode' => ['type' => 'string'],
+			'sorting' => ['type' => 'string'],
+			'price_type' => ['type' => 'string'],
+			'discount' => ['type' => 'int'],
+			'brand' => ['type' => 'string'],
+			'with-price' => ['type' => 'int'],
+			'prices' => ['type' => 'string'],
+			'display_mode' => ['type' => 'string'],
+			'page' => ['type' => 'int']
+		]);
+
+		$presenter = new PriceItems();
+
+		if ($filters['mode'] === 'map') {
+			app()->setUseMap(true);
+			$presenter->setLimit(1000)
+					->setPage($this->getPage());
+		} elseif ($filters['mode'] === 'price') {
+			$presenter->setLimit(app()->config()->get('app.prices.onpage', 10))
+					->setPage($this->getPage());
+		} else {
+			$presenter->setLimit(app()->config()->get('app.firms.onpage', 10))
+					->setPage($this->getPage());
+		}
+
+		$tags = $this->getTagsByCatalog($catalog->exists() ? $catalog : $ssg);
+		//основной метод выборки данных
+		$presenter = $presenter->find($id_group, $id_subgroup, $filters, $id_catalog);
+		if ((int) $presenter->pagination()->getTotalPages() < (int) $filters['page']) {
+			$url = parse_url(app()->uri())['path'];
+			app()->response()->redirect(app()->link(app()->linkFilter($url, $filters, ['page' => false])), 301);
+		}
+
+		if ($catalog->exists()) {
+			if (str()->translit(trim($catalog->val('web_many_name'))) . '.htm' !== (string) $mnemonick) {
+				app()->response()->redirect(app()->link($catalog->link()), 301);
+			}
+			app()->metadata()
+					->setNew($catalog, $filters, $presenter->pagination())
+					//->set($catalog, $catalog->getDefaultTitle(), $catalog->getDefaultKeywords(), $catalog->getDefaultDescription(), true, $presenter->pagination(), $filters)
+					->setHeader($catalog->name());
+		} else {
+			app()->metadata()
+					->setNew($ssg, $filters, $presenter->pagination())
+					->setHeader($ssg->name());
+
+			$catalog->getSubGroup($id_group, $id_subgroup);
+		}
+		$this->setCanonicalLink($catalog->link(), $filters);
+
+		$tabs = [
+			['link' => app()->linkFilter($presenter->pagination()->getLink(), $filters, ['mode' => false]), 'label' => 'Компании'],
+			['link' => app()->linkFilter($presenter->pagination()->getLink(), $filters, ['mode' => 'price']), 'label' => (int) $id_group === 44 ? 'Услуги' : 'Товары'],
+			['link' => app()->linkFilter($presenter->pagination()->getLink(), $filters, ['mode' => 'map']), 'label' => 'На карте', 'nofollow' => true]
+		];
+
+		app()->tabs()
+				->setActiveSortOption(self::getCurrentSorting($filters))
+				->setActiveTab($filters['mode'] == 'price' ? 1 : ($filters['mode'] == 'map' ? 2 : 0))
+				//->setLink(app()->link(app()->uri()))
+				->setDisplayMode($filters['mode'] === 'price' ? true : false)
+				->setFilters($filters)
+				->setTabs($tabs)
+				->setTabsNumericValues([$presenter->pagination()->getTotalRecordsParam('firms'), $presenter->pagination()->getTotalRecordsParam('prices'), null]);
+
+		$items_exists = count($presenter->getItems()) > 0;
+		$no_items_groups = [];
+		if (!$items_exists) {
+			$parent = $catalog->adjacencyListComponent()->getParent();
+			$no_items_groups = $this->getTagsByCatalog($parent->val('id_subgroup'), $parent->id());
+			app()->metadata()->noIndex(true);
+		} else if (!app()->location()->city()->exists()) {
+			app()->metadata()->noIndex();
+		}
+
+		$analog_catalogs = $this->getAnalogCatalogs($catalog);
+		$promo = new \App\Presenter\FirmPromoItems();
+		$promo_items = $promo->findFirmPromos($id_group, $id_subgroup)->renderItems();
+
+		if (!$items_exists) {
+			$sidebar_params = app()->sidebar()->getParams();
+			if (isset($sidebar_params['right_layout_filter_sidebar'])) {
+				app()->frontController()->layout()->setTemplate('catalog_unfixed_sidebar_footer');
+			} else {
+				app()->frontController()->layout()->setTemplate('page');
+			}
+			app()->response()->code404();
+		}
+
+		if ((int) $presenter->pagination()->getPage() != 1) {
+			app()->metadata()->setCanonicalUrl(app()->link('/catalog/' . $id_group . '/' . $id_subgroup . '/'
+							. ($id_catalog != null ? $id_catalog . '/' : '') . ($mnemonick != null ? $mnemonick : '')
+							. ($filters['mode'] === 'price' ? '?mode=price' : '')));
+		}
+
+
+		$this->view()
+				->set('advert_restrictions', app()->adv()->renderRestrictions())
+				->set('advert_age_restrictions', app()->adv()->renderAgeRestrictions())
+				->set('analog_catalogs', $analog_catalogs)
+				->set('bottom_text', $catalog->getBottomText())
+				->set('filters', $filters)
+				->set('group', $sg)
+				->set('item', $catalog)
+				->set('items', $presenter->renderItems())
+				->set('items_exists', $items_exists)
+				->set('no_items_groups', $no_items_groups)
+				->set('pagination', $presenter->pagination()->render())
+				->set('promo_items', $promo_items)
+				->set('promo_catalog_data', $catalog->getPromoCatalogData($id_group, $id_subgroup))
+				->set('sub_group', $ssg)
+				->set('tabs', app()->tabs()->render())
+				->set('tags', $tags)
+				->set('top_text', $catalog->getTopText($id_group, $id_subgroup, $filters))
+				->set('annotation_text', $catalog->getAnnotationText($id_group, $id_subgroup, $filters))
+				->set('total_firms_count', $presenter->pagination()->getTotalRecordsParam('firms'))
+				->set('total_prices_count', $presenter->pagination()->getTotalRecordsParam('prices'))
+				->setTemplate('catalog_level_3');
+
+		return $this->afterExecute($this);
+	}
+
+}
